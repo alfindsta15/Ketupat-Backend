@@ -59,14 +59,36 @@ export function parseQuotationChoice(rawText: string): QuotationChoice {
   return null;
 }
 
-export type GlobalCommand = "RESTART" | "STATUS" | null;
+export type GlobalCommand = "GREETING" | "RESTART" | "STATUS" | null;
 
+const GREETING_WORDS = [
+  "halo", "hallo", "hai", "hi", "hei", "hey", "p", "pagi", "siang", "sore", "malam",
+  "halo kak", "hallo kak", "hai kak", "hi kak", "halo min", "hai min", "permisi",
+  "selamat pagi", "selamat siang", "selamat sore", "selamat malam",
+  "assalamualaikum", "assalamu'alaikum", "assalamualaikum kak", "assalamualaikum min",
+];
+const RESTART_WORDS = ["mulai", "menu", "start", "order baru", "pesan baru", "order lagi"];
+
+/**
+ * GREETING : sapaan biasa. Bila customer punya order berjalan, sapaan TIDAK
+ *            menghapus order tersebut (sebelumnya "halo" memutus order aktif
+ *            sehingga bukti bayar sesudahnya tidak terbaca).
+ * RESTART  : perintah eksplisit "menu"/"mulai" -> mulai order baru.
+ */
 export function parseGlobalCommand(rawText: string): GlobalCommand {
-  const text = rawText.trim().toLowerCase();
-  if (["halo", "hallo", "hai", "hi", "mulai", "menu", "start"].includes(text)) return "RESTART";
+  const text = rawText.trim().toLowerCase().replace(/[!.?,]+$/g, "");
+  if (RESTART_WORDS.includes(text)) return "RESTART";
+  if (GREETING_WORDS.includes(text)) return "GREETING";
   // "STATUS", "CEK ORDER", optionally followed by an order id, e.g. "status KTP-00001"
   if (/^(status|cek order|cek status|order status)(\s|$)/.test(text)) return "STATUS";
   return null;
+}
+
+/** Customer menyatakan sudah membayar lewat teks ("sudah bayar", "udah transfer", "lunas"). */
+export function isPaymentClaim(rawText: string): boolean {
+  const text = rawText.trim().toLowerCase();
+  if (!text) return false;
+  return /(sudah|udah|dah|telah|sdh)\s*(bayar|transfer|tf|dibayar|ditransfer|lunas)|^lunas$|bukti\s*(bayar|transfer|pembayaran)|sudah\s*ya$/.test(text);
 }
 
 /** Parses a rating message like "5" or "5 mantap banget!" into { rating, feedback } */
