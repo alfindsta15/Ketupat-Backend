@@ -85,16 +85,67 @@ export async function updateOrderStatus(orderId: number, status: string) {
   return order;
 }
 
-export async function setOrderPrice(orderId: number, price: number, note?: string, adminId?: number) {
-  const [order] = await prisma.$transaction([
-    prisma.order.update({
+export async function setOrderPrice(
+  orderId: number,
+  price: number,
+  note?: string,
+  adminId?: number
+) {
+  const result = await prisma.$transaction(async (tx) => {
+    const order = await tx.order.update({
       where: { id: orderId },
-      data: { price, status: ORDER_STATUS.WAITING_PAYMENT, adminNote: note },
-    }),
-    prisma.quotation.create({
-      data: { orderId, price, note, createdBy: adminId },
-    }),
-  ]);
-  logger.info("Quotation created", { orderNumber: order.orderNumber, price });
-  return order;
+      data: {
+        price,
+        status: ORDER_STATUS.WAITING_PAYMENT,
+        adminNote: note,
+      },
+    });
+
+    await tx.quotation.create({
+      data: {
+        orderId,
+        price,
+        note,
+        createdBy: adminId,
+      },
+    });
+
+    // Buat payment sejak order masuk tahap pembayaran.
+    // Jika sudah ada payment aktif, jangan membuat duplikat.
+    const existingPayment = await tx.payment.findFirst({
+      where: {
+        orderId,
+        status: {
+          in: ["PENDING", "REVIEW"],
+        },
+      },
+      orderBy: {
+        createdAt: "desc",
+      },
+    });
+
+    if (!existingPayment) {
+      await tx.payment.create({
+        data: {
+          orderId,
+          amount: price,
+          status: "PENDING",
+        },
+      });
+    } else {
+      await tx.payment.update({
+        where: { id: existingPayment.id },
+        data: { amount: price },
+      });
+    }
+
+    return order;
+  });
+
+  logger.info("Quotation created", {
+    orderNumber: result.orderNumber,
+    price,
+  });
+
+  return result;
 }
