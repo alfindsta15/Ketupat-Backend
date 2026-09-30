@@ -1,0 +1,206 @@
+// KETUPAT WhatsApp Order Bot - Database Schema
+// Provider: SQLite (development). Swap to postgresql for production if needed.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// ADMIN
+// ---------------------------------------------------------------------------
+model Admin {
+  id           Int      @id @default(autoincrement())
+  name         String
+  email        String   @unique
+  passwordHash String
+  role         String   @default("ADMIN") // ADMIN | SUPERADMIN
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  quotationsGiven Quotation[] @relation("QuotationCreatedBy")
+  paymentsVerified Payment[]  @relation("PaymentVerifiedBy")
+
+  @@map("admins")
+}
+
+// ---------------------------------------------------------------------------
+// USER (Customer, identified by WhatsApp number)
+// ---------------------------------------------------------------------------
+model User {
+  id          Int      @id @default(autoincrement())
+  phoneNumber String   @unique // normalized, e.g. 6288123456789
+  name        String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  orders       Order[]
+  conversation Conversation?
+  messages     Message[]
+
+  @@map("users")
+}
+
+// ---------------------------------------------------------------------------
+// CONVERSATION (bot state machine per phone number)
+// ---------------------------------------------------------------------------
+model Conversation {
+  id          Int      @id @default(autoincrement())
+  phoneNumber String   @unique
+  state       String   @default("WELCOME")
+  orderId     Int?     @unique
+  context     String?  // JSON-encoded scratch data collected during the flow
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user  User   @relation(fields: [phoneNumber], references: [phoneNumber])
+  order Order? @relation(fields: [orderId], references: [id])
+
+  @@map("conversations")
+}
+
+// ---------------------------------------------------------------------------
+// ORDER
+// ---------------------------------------------------------------------------
+model Order {
+  id          Int       @id @default(autoincrement())
+  orderNumber String    @unique // #KTP-00001 (stored without the leading #)
+  userId      Int
+  service     String // TUGAS | PPT | CV | CODING | WEBSITE | MOBILE_APP | KONSULTASI
+  description String?
+  deadline    String?
+  referenceNote String?
+  status      String    @default("WAITING_BRIEF")
+  // WAITING_BRIEF | WAITING_QUOTATION | WAITING_PAYMENT | PAYMENT_REVIEW |
+  // PAID | PROCESSING | REVIEW | COMPLETED | CANCELLED
+  price       Float?
+  adminNote   String?
+  resultUrl   String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  user         User          @relation(fields: [userId], references: [id])
+  conversation Conversation?
+  items        OrderItem[]
+  files        File[]
+  payments     Payment[]
+  quotations   Quotation[]
+  review       Review?
+
+  @@map("orders")
+}
+
+// Extra structured attachments/info attached to an order (references, notes, etc.)
+model OrderItem {
+  id        Int      @id @default(autoincrement())
+  orderId   Int
+  label     String // e.g. "Referensi", "Catatan tambahan"
+  value     String
+  createdAt DateTime @default(now())
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@map("order_items")
+}
+
+// ---------------------------------------------------------------------------
+// FILE (briefs, references, proof of payment, final result, QRIS, etc.)
+// ---------------------------------------------------------------------------
+model File {
+  id         Int      @id @default(autoincrement())
+  orderId    Int?
+  type       String // BRIEF | REFERENCE | PROOF | RESULT | QRIS
+  url        String
+  filename   String
+  mimeType   String?
+  size       Int?
+  uploadedBy String   @default("CUSTOMER") // CUSTOMER | ADMIN
+  createdAt  DateTime @default(now())
+
+  order Order? @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@map("files")
+}
+
+// ---------------------------------------------------------------------------
+// QUOTATION
+// ---------------------------------------------------------------------------
+model Quotation {
+  id        Int      @id @default(autoincrement())
+  orderId   Int
+  price     Float
+  note      String?
+  createdAt DateTime @default(now())
+  createdBy Int?
+
+  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  admin   Admin? @relation("QuotationCreatedBy", fields: [createdBy], references: [id])
+
+  @@map("quotations")
+}
+
+// ---------------------------------------------------------------------------
+// PAYMENT
+// ---------------------------------------------------------------------------
+model Payment {
+  id         Int       @id @default(autoincrement())
+  orderId    Int
+  amount     Float
+  status     String    @default("PENDING") // PENDING | REVIEW | PAID | REJECTED
+  proofFile  String?
+  verifiedAt DateTime?
+  verifiedBy Int?
+  createdAt  DateTime  @default(now())
+
+  order Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  admin Admin? @relation("PaymentVerifiedBy", fields: [verifiedBy], references: [id])
+
+  @@map("payments")
+}
+
+// ---------------------------------------------------------------------------
+// REVIEW
+// ---------------------------------------------------------------------------
+model Review {
+  id        Int      @id @default(autoincrement())
+  orderId   Int      @unique
+  rating    Int
+  feedback  String?
+  createdAt DateTime @default(now())
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@map("reviews")
+}
+
+// ---------------------------------------------------------------------------
+// MESSAGE LOG (all inbound/outbound WhatsApp messages)
+// ---------------------------------------------------------------------------
+model Message {
+  id          Int      @id @default(autoincrement())
+  phoneNumber String
+  direction   String // IN | OUT
+  message     String
+  messageType String   @default("text") // text | image | document | location
+  createdAt   DateTime @default(now())
+
+  user User? @relation(fields: [phoneNumber], references: [phoneNumber])
+
+  @@index([phoneNumber])
+  @@map("messages")
+}
+
+// ---------------------------------------------------------------------------
+// SETTINGS (key/value store, e.g. active QRIS image path)
+// ---------------------------------------------------------------------------
+model Setting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+
+  @@map("settings")
+}
