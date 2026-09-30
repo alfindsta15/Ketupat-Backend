@@ -10,12 +10,16 @@ export const apiRateLimiter = rateLimit({
   message: { message: "Terlalu banyak permintaan, coba lagi sebentar lagi." },
 });
 
-/** Stricter limiter for the admin login endpoint to slow down brute force attempts. */
+/**
+ * Limiter login. Hanya percobaan GAGAL yang dihitung (skipSuccessfulRequests),
+ * jadi admin yang login normal tidak pernah terkena limit.
+ */
 export const loginRateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
   standardHeaders: true,
   legacyHeaders: false,
+  skipSuccessfulRequests: true,
   message: { message: "Terlalu banyak percobaan login. Coba lagi dalam 15 menit." },
 });
 
