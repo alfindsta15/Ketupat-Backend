@@ -22,7 +22,7 @@ export const env = {
   databaseUrl: required("DATABASE_URL", "file:./dev.db"),
 
   jwtSecret: required("JWT_SECRET", "dev-only-insecure-secret-change-me"),
-  jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? "12h",
+  jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? "7d",
 
   seedAdmin: {
     name: process.env.SEED_ADMIN_NAME ?? "Admin KETUPAT",
