@@ -3,38 +3,44 @@ import { z } from "zod";
 import { env } from "../config/env";
 import { logger } from "../utils/logger";
 import { normalizePhoneNumber } from "../utils/phone";
-import { downloadToUploads } from "../utils/download";
-import { handleIncomingMessage } from "../bot/bot.engine";
+import { cleanExtension, downloadToUploads } from "../utils/download";
+import { handleIncomingMessage, IncomingWhatsAppMessage } from "../bot/bot.engine";
 import { asyncHandler } from "../utils/asyncHandler";
 
-const IMAGE_EXTENSIONS = ["jpg", "jpeg", "png", "webp", "gif"];
+const IMAGE_EXTENSIONS = ["jpg", "jpeg", "png", "webp", "gif", "heic", "heif"];
 
-// Fonnte's webhook payload isn't fully typed by them, so we validate loosely:
-// only `sender` is truly required for us to route the message anywhere.
-const fonnteWebhookSchema = z.object({
-  device: z.string().optional(),
-  sender: z.string().min(1, "sender is required"),
-  message: z.string().optional().default(""),
-  text: z.string().optional(), // button reply text
-  name: z.string().optional(),
-  member: z.string().optional(), // group sender, unused (we operate 1:1 only)
-  location: z.string().optional(),
-  url: z.string().optional(),
-  filename: z.string().optional(),
-  extension: z.string().optional(),
-  timestamp: z.union([z.string(), z.number()]).optional(),
-});
+// Fonnte kadang mengirim field kosong sebagai null / angka. Skema lama memakai
+// z.string().optional() sehingga payload berisi null DITOLAK (HTTP 400) dan
+// pesan (termasuk foto) hilang begitu saja. Semua field dibuat toleran.
+const looseString = z.preprocess(
+  (v) => (v === null || v === undefined ? undefined : String(v)),
+  z.string().optional()
+);
+
+const fonnteWebhookSchema = z
+  .object({
+    device: looseString,
+    sender: z.preprocess((v) => (v == null ? "" : String(v)), z.string().min(1, "sender is required")),
+    message: looseString,
+    text: looseString, // teks tombol
+    name: looseString,
+    member: looseString,
+    location: looseString,
+    url: looseString,
+    filename: looseString,
+    extension: looseString,
+    timestamp: looseString,
+  })
+  .passthrough();
+
+// Teks "pengganti" yang dipakai gateway ketika pesan bukan teks.
+const NON_TEXT_PLACEHOLDER = /^\[?\s*(non[- ]?text message|image|photo|foto|gambar|document|dokumen|media|attachment)\s*\]?$/i;
 
 /**
  * POST /webhook/fonnte
- * Receives every inbound WhatsApp message/event from Fonnte and forwards it
- * to the bot's conversation engine. Always returns HTTP 200 on successfully
- * parsed payloads (Fonnte requires 200 to consider the webhook delivered),
- * and HTTP 400 on invalid/unparseable payloads.
+ * Selalu balas 200 untuk payload valid (Fonnte butuh 200), 400 untuk payload rusak.
  */
 export const receiveFonnteWebhook = asyncHandler(async (req: Request, res: Response) => {
-  // Optional shared-secret check. Configure FONNTE_WEBHOOK_SECRET and add
-  // ?secret=... to the webhook URL you register in the Fonnte dashboard.
   if (env.fonnte.webhookSecret) {
     const providedSecret = req.query.secret;
     if (providedSecret !== env.fonnte.webhookSecret) {
@@ -50,42 +56,70 @@ export const receiveFonnteWebhook = asyncHandler(async (req: Request, res: Respo
   }
 
   const data = parsed.data;
-  logger.debug("Fonnte webhook payload", { body: req.body });
-
   const phoneNumber = normalizePhoneNumber(data.sender);
-
   if (!phoneNumber) {
     return res.status(400).json({ message: "Unable to normalize sender phone number" });
   }
 
+  // Teks yang dilihat bot: pesan biasa, atau teks tombol.
+  let text = (data.message || data.text || "").trim();
+
   let mediaLocalPath: string | null = null;
-  let messageType: "text" | "image" | "document" | "location" | "other" = "text";
+  let mediaRemoteUrl: string | null = null;
+  let messageType: IncomingWhatsAppMessage["messageType"] = "text";
+  let hasAttachment = false;
+
+  const url = (data.url ?? "").trim();
+  const hintedExt = cleanExtension(data.extension || (url ? url.split("?")[0].split(".").pop() : ""));
 
   if (data.location) {
     messageType = "location";
-  } else if (data.url) {
-    const ext = (data.extension || data.url.split(".").pop() || "").toLowerCase();
-    messageType = IMAGE_EXTENSIONS.includes(ext) ? "image" : "document";
-    const downloaded = await downloadToUploads(data.url, "incoming", ext || undefined);
+  } else if (url) {
+    // ---- Ada lampiran dengan URL dari Fonnte ----
+    hasAttachment = true;
+    mediaRemoteUrl = url;
+
+    const downloaded = await downloadToUploads(url, "incoming", hintedExt || undefined);
     mediaLocalPath = downloaded?.relativePath ?? null;
+
+    const contentType = (downloaded?.contentType ?? "").toLowerCase();
+    const finalExt = downloaded?.extension || hintedExt;
+    const isImage = contentType.startsWith("image/") || IMAGE_EXTENSIONS.includes(finalExt);
+    messageType = isImage ? "image" : "document";
+
+    if (NON_TEXT_PLACEHOLDER.test(text)) text = "";
+  } else if (!text || NON_TEXT_PLACEHOLDER.test(text)) {
+    // ---- Tidak ada teks & tidak ada URL ----
+    // Pesan WhatsApp tanpa teks pasti berupa lampiran (foto/dokumen/stiker/voice).
+    // Fonnte hanya mengirim `url` untuk device dengan paket "all feature", jadi
+    // kita tetap tandai sebagai lampiran (bukan teks kosong) agar bot bisa
+    // menerimanya sebagai bukti dan admin mengecek langsung di WhatsApp.
+    hasAttachment = true;
+    messageType = "other";
+    text = "";
   }
 
+  // Log ringkas (tanpa isi pesan) supaya mudah diagnosa dari log server.
   logger.info("Incoming WhatsApp message", {
     phoneNumber,
     messageType,
-    hasAttachment: Boolean(data.url),
+    hasAttachment,
+    hasUrl: Boolean(url),
+    downloaded: Boolean(mediaLocalPath),
+    payloadKeys: Object.keys(req.body ?? {}),
   });
 
   try {
     await handleIncomingMessage({
-  phoneNumber,
-  text: data.message || "",
-  messageType,
-  mediaLocalPath,
-  senderName: data.name,
-});
+      phoneNumber,
+      text,
+      messageType,
+      hasAttachment,
+      mediaLocalPath,
+      mediaRemoteUrl,
+      senderName: data.name,
+    });
   } catch (err) {
-    // Never let a bot-logic bug take down the webhook / crash the server.
     logger.error("Bot engine failed to process incoming message", {
       error: err instanceof Error ? err.message : String(err),
       phoneNumber,
