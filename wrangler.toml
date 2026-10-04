@@ -1,0 +1,52 @@
+# ============================================================
+# KETUPAT backend - Cloudflare Worker
+# Dokumentasi: README.md bagian "Deploy ke Cloudflare Workers"
+# ============================================================
+name = "ketupat-api"
+main = "src/worker.ts"
+compatibility_date = "2025-09-01"
+# nodejs_compat dibutuhkan oleh driver `pg` (TCP ke Neon), AsyncLocalStorage, dan node:crypto.
+compatibility_flags = ["nodejs_compat"]
+
+# Log bisa dilihat di dashboard Cloudflare (Workers -> ketupat-api -> Logs) atau `npx wrangler tail`.
+[observability]
+enabled = true
+
+# ---------- Penyimpanan file (pengganti folder uploads/ di Back4app) ----------
+# Buat bucket dulu:  npx wrangler r2 bucket create ketupat-uploads
+[[r2_buckets]]
+binding = "UPLOADS"
+bucket_name = "ketupat-uploads"
+
+# ---------- (Opsional) Hyperdrive: pooling koneksi ke Neon, lebih cepat ----------
+# 1) npx wrangler hyperdrive create ketupat-db --connection-string="postgresql://...(koneksi DIRECT Neon)..."
+# 2) hapus tanda # pada 3 baris di bawah dan isi id dari langkah 1
+# Tanpa Hyperdrive, Worker memakai secret DATABASE_URL langsung (juga berfungsi).
+# [[hyperdrive]]
+# binding = "HYPERDRIVE"
+# id = "ISI_ID_HYPERDRIVE"
+
+# ---------- Variabel non-rahasia ----------
+# CATATAN: `wrangler deploy` menimpa variabel yang diubah manual di dashboard. Ubah di file ini.
+[vars]
+NODE_ENV = "production"
+# Domain frontend Vercel. Boleh beberapa dipisah koma, wildcard didukung: "https://ketupat.vercel.app,https://*.vercel.app"
+FRONTEND_URL = "https://GANTI-DENGAN-DOMAIN-VERCEL.vercel.app"
+# URL publik Worker ini (untuk link QRIS & file hasil). Kosongkan untuk otomatis memakai domain Worker.
+APP_BASE_URL = ""
+JWT_EXPIRES_IN = "7d"
+FONNTE_BASE_URL = "https://api.fonnte.com"
+# Nomor WhatsApp admin untuk notifikasi Konsultasi / order berat (format 628xxxxxxxxxx). Boleh kosong.
+ADMIN_WHATSAPP_NUMBER = ""
+MAX_UPLOAD_SIZE_MB = "5"
+RATE_LIMIT_WINDOW_MS = "60000"
+RATE_LIMIT_MAX = "120"
+# Stiker opsional (URL .webp publik). Kosongkan bila tidak dipakai.
+STICKER_ORDER_CREATED_URL = ""
+STICKER_PAYMENT_VERIFIED_URL = ""
+STICKER_COMPLETED_URL = ""
+
+# ---------- RAHASIA: JANGAN ditulis di sini ----------
+# Set dengan:  npx wrangler secret put NAMA
+#   DATABASE_URL, JWT_SECRET, FONNTE_TOKEN, FONNTE_WEBHOOK_SECRET
+# Untuk lokal, isi file .dev.vars (lihat .dev.vars.example).

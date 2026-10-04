@@ -1,0 +1,20 @@
+# Salin ke ".dev.vars" (JANGAN di-commit). Dipakai oleh `wrangler dev`, Prisma CLI, dan `npm run seed:admin`.
+
+# Neon: pakai koneksi DIRECT (tanpa "-pooler") dan HAPUS "&channel_binding=require" dari URL.
+DATABASE_URL="postgresql://USER:PASSWORD@ep-xxxx.us-east-2.aws.neon.tech/neondb?sslmode=require"
+
+# Acak panjang: openssl rand -hex 32
+JWT_SECRET="ganti-dengan-string-acak-minimal-32-karakter"
+
+FONNTE_TOKEN=""
+FONNTE_WEBHOOK_SECRET=""
+
+# Variabel lokal (di produksi ada di wrangler.toml)
+FRONTEND_URL="http://localhost:5173"
+APP_BASE_URL="http://localhost:8787"
+NODE_ENV="development"
+
+# Hanya dipakai oleh `npm run seed:admin`
+SEED_ADMIN_NAME="Admin KETUPAT"
+SEED_ADMIN_EMAIL="admin@ketupat.id"
+SEED_ADMIN_PASSWORD="ganti-password-ini"
