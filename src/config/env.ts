@@ -2,15 +2,14 @@
  * Konfigurasi runtime untuk Cloudflare Workers.
  *
  * Di Workers tidak ada `process.env` yang dibaca saat start. Semua nilai datang dari
- * "bindings" (vars + secrets + R2 + Hyperdrive) yang dikirim runtime di setiap request.
+ * "bindings" (vars + secrets + Hyperdrive opsional) yang dikirim runtime di setiap request.
  * `env` di bawah adalah objek singleton yang diisi ulang oleh `initEnv()` di awal request,
  * sehingga seluruh service/bot lama tetap bisa memakai `import { env } from "../config/env"`.
  */
-import type { R2Bucket, Hyperdrive } from "@cloudflare/workers-types";
+import type { Hyperdrive } from "@cloudflare/workers-types";
 
 export interface Bindings {
   // --- binding Cloudflare ---
-  UPLOADS: R2Bucket;
   HYPERDRIVE?: Hyperdrive;
 
   // --- secrets (wrangler secret put ...) ---

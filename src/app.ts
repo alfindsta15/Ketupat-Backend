@@ -8,6 +8,7 @@ import { receiveFonnteWebhook } from "./controllers/webhook.controller";
 import { apiRateLimiter, webhookRateLimiter } from "./middleware/rateLimit.middleware";
 import { errorHandler, notFoundHandler } from "./middleware/error.middleware";
 import { UPLOAD_DIRS } from "./lib/storage";
+import { prisma } from "./lib/prisma";
 
 /** Cocokkan origin dengan daftar FRONTEND_URL (mendukung wildcard, mis. https://*.vercel.app). */
 function originAllowed(origin: string): boolean {
@@ -36,21 +37,23 @@ export function createApp() {
 
   app.get("/health", (c) => c.json({ status: "ok", service: "ketupat-backend", runtime: "cloudflare-workers" }));
 
-  // File upload (QRIS, bukti bayar, referensi, hasil) disajikan dari R2 pada path yang sama seperti dulu.
+  // File upload (QRIS, bukti bayar, referensi, hasil) disajikan dari database pada path /uploads/<folder>/<nama>.
   app.on(["GET", "HEAD"], "/uploads/*", async (c) => {
     const key = decodeURIComponent(new URL(c.req.url).pathname.replace(/^\/uploads\//, ""));
     const [dir, name, ...rest] = key.split("/");
     if (rest.length || !name || !(UPLOAD_DIRS as readonly string[]).includes(dir) || !/^[A-Za-z0-9._-]+$/.test(name)) {
       return c.json({ message: "Not found" }, 404);
     }
-    const object = await c.env.UPLOADS.get(key);
-    if (!object) return c.json({ message: "File tidak ditemukan" }, 404);
+    const file = await prisma.upload.findUnique({ where: { key } });
+    if (!file) return c.json({ message: "File tidak ditemukan" }, 404);
 
-    const headers = new Headers();
-    object.writeHttpMetadata(headers as any);
-    headers.set("etag", object.httpEtag);
-    headers.set("Cache-Control", "public, max-age=86400");
-    return new Response(c.req.method === "HEAD" ? null : (object.body as any), { headers });
+    const headers = new Headers({
+      "Content-Type": file.mimeType || "application/octet-stream",
+      "Content-Length": String(file.data.byteLength),
+      "Cache-Control": "public, max-age=86400",
+      ETag: `"${key.replace(/[^A-Za-z0-9]/g, "")}-${file.size}"`,
+    });
+    return new Response(c.req.method === "HEAD" ? null : (file.data as unknown as BodyInit), { headers });
   });
 
   app.post("/webhook/fonnte", webhookRateLimiter, receiveFonnteWebhook);

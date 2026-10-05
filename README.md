@@ -1,6 +1,6 @@
 # KETUPAT Backend (Cloudflare Workers)
 
-Backend bot WhatsApp KETUPAT: **Hono + TypeScript** di **Cloudflare Workers**, database **Neon PostgreSQL** lewat Prisma 7, file upload di **Cloudflare R2**, WhatsApp via **Fonnte**.
+Backend bot WhatsApp KETUPAT: **Hono + TypeScript** di **Cloudflare Workers**, database **Neon PostgreSQL** lewat Prisma 7 (file upload juga disimpan di Neon), WhatsApp via **Fonnte**.
 Dokumentasi lengkap (arsitektur, deploy, troubleshooting) ada di `README.md` proyek utama; ringkasan operasional ada di bawah.
 
 ## Mulai cepat
@@ -19,7 +19,7 @@ npm run typecheck && npm test
 
 ```bash
 npx wrangler login
-npx wrangler r2 bucket create ketupat-uploads
+npm run prisma:deploy                          # buat tabel uploads di Neon
 # edit [vars] di wrangler.toml (FRONTEND_URL wajib diganti dengan domain Vercel)
 npx wrangler secret put DATABASE_URL
 npx wrangler secret put JWT_SECRET             # openssl rand -hex 32
@@ -39,7 +39,7 @@ Lalu:
 
 | Perintah | Fungsi |
 |---|---|
-| `npm run dev` | Worker lokal (`wrangler dev`), R2 disimulasikan |
+| `npm run dev` | Worker lokal (`wrangler dev`) |
 | `npm run deploy` | `prisma generate` + `wrangler deploy` |
 | `npm run seed:admin` | Buat/perbarui admin dari `.dev.vars` |
 | `npm run prisma:deploy` | Terapkan migrasi ke database |
@@ -50,10 +50,10 @@ Lalu:
 
 ```
 src/worker.ts      entry point (env, koneksi DB per request)
-src/app.ts         Hono: CORS, /health, /uploads dari R2, /webhook, /api
+src/app.ts         Hono: CORS, /health, /uploads dari database, /webhook, /api
 src/routes|controllers|services|middleware|bot|utils|lib
 prisma/            schema, migrations, seed
-wrangler.toml      konfigurasi Worker + R2 (+ Hyperdrive opsional)
+wrangler.toml      konfigurasi Worker (+ Hyperdrive opsional)
 ```
 
 Jangan commit `.dev.vars` / `.env`. Rahasia produksi hanya lewat `wrangler secret put`.

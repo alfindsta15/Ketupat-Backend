@@ -4,8 +4,8 @@
 
 generator client {
   provider = "prisma-client"
+  runtime  = "workerd"
   output   = "./generated"
-  runtime  = "cloudflare"
 }
 
 datasource db {
@@ -205,4 +205,19 @@ model Setting {
   updatedAt DateTime @updatedAt
 
   @@map("settings")
+}
+
+// ---------------------------------------------------------------------------
+// UPLOAD: isi file (QRIS, bukti bayar, referensi, hasil, lampiran masuk) disimpan di database
+// karena backend berjalan di Cloudflare Workers tanpa disk & tanpa R2.
+// `key` = "<folder>/<nama-file>", sama dengan path publik /uploads/<key>.
+// ---------------------------------------------------------------------------
+model Upload {
+  key       String   @id
+  mimeType  String
+  size      Int
+  data      Bytes
+  createdAt DateTime @default(now())
+
+  @@map("uploads")
 }

@@ -2,7 +2,6 @@ import type { ExecutionContext } from "@cloudflare/workers-types";
 import { createApp } from "./app";
 import { Bindings, initEnv } from "./config/env";
 import { requestContext, RequestStore } from "./lib/context";
-import { setBindings } from "./lib/bindings";
 import { createPrismaClient, PrismaClient } from "./lib/prisma";
 import { logger } from "./utils/logger";
 
@@ -11,7 +10,6 @@ const app = createApp();
 export default {
   async fetch(request: Request, bindings: Bindings, ctx: ExecutionContext): Promise<Response> {
     initEnv(bindings, request.url);
-    setBindings(bindings);
 
     const path = new URL(request.url).pathname;
     const needsAuthSecret = path.startsWith("/api/") || path.startsWith("/webhook/");
@@ -22,7 +20,7 @@ export default {
       );
     }
 
-    // PrismaClient dibuat malas (lazy): request tanpa DB (mis. /health, file R2) tidak membuka koneksi.
+    // PrismaClient dibuat malas (lazy): request tanpa DB (mis. /health) tidak membuka koneksi.
     let client: PrismaClient | undefined;
     const store: RequestStore = {
       getPrisma: () => (client ??= createPrismaClient(bindings)),

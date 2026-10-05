@@ -1,8 +1,8 @@
 import { env } from "../config/env";
-import { currentBindings } from "./bindings";
+import { prisma } from "./prisma";
 import { HttpError } from "./http";
 
-/** Folder logis di bucket R2. Sama dengan struktur folder `uploads/` versi lama. */
+/** Folder logis (bagian awal `key`). Sama dengan struktur folder `uploads/` versi lama. */
 export const UPLOAD_DIRS = ["qris", "results", "incoming", "proof", "reference"] as const;
 export type UploadDir = (typeof UPLOAD_DIRS)[number];
 
@@ -43,13 +43,16 @@ export interface StoredFile {
   size: number;
 }
 
-/** Simpan File (dari multipart) ke R2. */
+async function putObject(dir: UploadDir, filename: string, body: Uint8Array, contentType: string) {
+  await prisma.upload.create({
+    data: { key: `${dir}/${filename}`, mimeType: contentType || "application/octet-stream", size: body.byteLength, data: body },
+  });
+}
+
+/** Simpan File (dari multipart) ke database. */
 export async function saveUpload(dir: UploadDir, file: File): Promise<StoredFile> {
   const filename = randomName(safeExtension(file.name));
-  const body = await file.arrayBuffer();
-  await currentBindings().UPLOADS.put(`${dir}/${filename}`, body, {
-    httpMetadata: { contentType: file.type || "application/octet-stream" },
-  });
+  await putObject(dir, filename, new Uint8Array(await file.arrayBuffer()), file.type);
   return {
     filename,
     relativePath: `/uploads/${dir}/${filename}`,
@@ -59,12 +62,10 @@ export async function saveUpload(dir: UploadDir, file: File): Promise<StoredFile
   };
 }
 
-/** Simpan bytes mentah (mis. lampiran yang diunduh dari Fonnte) ke R2. */
+/** Simpan bytes mentah (mis. lampiran yang diunduh dari Fonnte) ke database. */
 export async function saveBytes(dir: UploadDir, bytes: ArrayBuffer, ext: string, contentType?: string | null) {
   const filename = randomName(ext ? `.${ext.replace(/^\./, "")}` : "");
-  await currentBindings().UPLOADS.put(`${dir}/${filename}`, bytes, {
-    httpMetadata: { contentType: contentType || "application/octet-stream" },
-  });
+  await putObject(dir, filename, new Uint8Array(bytes), contentType || "application/octet-stream");
   return { filename, relativePath: `/uploads/${dir}/${filename}` };
 }
 

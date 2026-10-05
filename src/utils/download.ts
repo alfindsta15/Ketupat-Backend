@@ -31,8 +31,8 @@ function extFromContentType(contentType: string | null): string {
 }
 
 /**
- * Mengunduh file dari URL Fonnte (hanya valid ~30 menit) lalu menyimpannya ke R2
- * (bucket UPLOADS). Mengembalikan path publik + content-type asli dari server,
+ * Mengunduh file dari URL Fonnte (hanya valid ~30 menit) lalu menyimpannya ke database
+ * (tabel uploads). Mengembalikan path publik + content-type asli dari server,
  * sehingga jenis file (foto/dokumen) bisa dideteksi walau `extension` dari Fonnte kosong.
  */
 export async function downloadToUploads(
