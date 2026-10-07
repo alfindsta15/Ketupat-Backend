@@ -4,6 +4,9 @@ import { prisma } from "../lib/prisma";
 import { HttpError, readJson } from "../lib/http";
 import { env } from "../config/env";
 import { changeOrderStatusWithNotify, setOrderPrice } from "../services/order.service";
+import { ensurePendingPayment } from "../services/payment.service";
+import { getActiveQris, hasDynamicQris } from "../services/settings.service";
+import { purgeCustomerFiles, purgeResultFiles } from "../services/cleanup.service";
 import { notifyCustomer } from "../services/notification.service";
 import { setState } from "../bot/bot.state";
 import { messages } from "../bot/bot.messages";
@@ -12,7 +15,7 @@ import { CONVERSATION_STATE, ORDER_STATUS, FILE_TYPE } from "../utils/constants"
 import { logger } from "../utils/logger";
 import { maybeSendSticker } from "../utils/sticker";
 import { buildUploadUrl } from "../services/upload-link.service";
-import { DOCUMENT_TYPES, maxBytes, parseMultipart, saveUpload } from "../lib/storage";
+import { DOCUMENT_TYPES, IMAGE_TYPES, maxBytes, parseMultipartFields, saveUpload } from "../lib/storage";
 
 function toPublicUrl(relativePath: string): string {
   if (/^https?:\/\//i.test(relativePath)) return relativePath;
@@ -77,6 +80,10 @@ export async function listOrders(c: AppContext) {
 // ---------------------------------------------------------------------------
 export async function getOrder(c: AppContext) {
   const id = Number(c.req.param("id"));
+  const pre = await prisma.order.findUnique({ where: { id }, select: { status: true } });
+  if (pre && (pre.status === ORDER_STATUS.WAITING_PAYMENT || pre.status === ORDER_STATUS.WAITING_FINAL_PAYMENT)) {
+    await ensurePendingPayment(id); // rapikan tagihan lama agar sesuai DP 50% / pelunasan
+  }
   const order = await prisma.order.findUnique({
     where: { id },
     include: {
@@ -143,6 +150,7 @@ const statusSchema = z.object({
     "PAYMENT_REVIEW",
     "PAID",
     "PROCESSING",
+    "WAITING_FINAL_PAYMENT",
     "REVIEW",
     "COMPLETED",
     "CANCELLED",
@@ -194,39 +202,55 @@ const resultBodySchema = z.object({
   note: z.string().max(2000).optional(),
 });
 
+/**
+ * POST /api/orders/:id/result  (multipart)
+ *   file      : file hasil asli (opsional jika pakai resultLink) -> TERKUNCI sampai lunas
+ *   resultLink: link hasil (Drive/GitHub/dll)                   -> TERKUNCI sampai lunas
+ *   previews  : gambar pratinjau (maks. 8) yang dibuat otomatis oleh dashboard dari file hasil (sudah ber-watermark & dikecilkan)
+ *   note      : catatan untuk customer
+ * Efek: status -> WAITING_FINAL_PAYMENT, tagihan pelunasan dibuat, customer dikirimi link pratinjau.
+ * Bila order sudah lunas penuh (mis. order lama), langsung SELESAI & hasil terbuka.
+ */
 export async function uploadOrderResult(c: AppContext) {
   const id = Number(c.req.param("id"));
-  const { files, fields } = await parseMultipart(c.req.raw, {
-    field: "file",
-    allowed: DOCUMENT_TYPES,
-    maxFileBytes: maxBytes() * 4, // hasil bisa lebih besar (zip, deck)
-    maxFiles: 1,
+  const { files, fields } = await parseMultipartFields(c.req.raw, {
+    file: { allowed: DOCUMENT_TYPES, anyType: true, maxFileBytes: maxBytes() * 4, maxFiles: 1 },
+    previews: { allowed: IMAGE_TYPES, maxFileBytes: maxBytes(), maxFiles: 8 },
   });
-  const file = files[0];
+  const final = files.file[0];
+  const previews = files.previews;
   const { resultLink, note } = resultBodySchema.parse(fields);
 
-  if (!file && !resultLink) throw new HttpError(400, "Upload file hasil atau isi link hasil.");
+  if (!final && !resultLink) throw new HttpError(400, "Upload file hasil atau isi link hasil.");
 
-  const order = await prisma.order.findUnique({ where: { id }, include: { user: true } });
+  const order = await prisma.order.findUnique({ where: { id }, include: { user: true, payments: true } });
   if (!order) throw new HttpError(404, "Order tidak ditemukan");
+  if (!order.price) throw new HttpError(400, "Harga belum diisi. Kirim quotation dulu.");
 
-  let publicUrl: string;
-  if (file) {
-    const saved = await saveUpload("results", file);
-    publicUrl = toPublicUrl(saved.relativePath);
+  const paidTotal = order.payments.filter((p: { status: string }) => p.status === "PAID").reduce((s: number, p: { amount: number }) => s + p.amount, 0);
+  const fullyPaid = paidTotal >= order.price;
+  if (!fullyPaid && !order.payments.some((p: { status: string }) => p.status === "PAID")) {
+    throw new HttpError(400, "DP 50% belum dibayar/diverifikasi. Verifikasi pembayaran DP dulu sebelum mengirim hasil.");
+  }
+
+  // Kirim ulang (mis. setelah revisi): buang pratinjau & hasil lama.
+  await purgeResultFiles(id);
+
+  let resultRef: string;
+  if (final) {
+    const saved = await saveUpload("final", final);
+    resultRef = saved.relativePath;
     await prisma.file.create({
-      data: {
-        orderId: id,
-        type: FILE_TYPE.RESULT,
-        url: saved.relativePath,
-        filename: saved.originalName,
-        mimeType: saved.mimeType,
-        size: saved.size,
-        uploadedBy: "ADMIN",
-      },
+      data: { orderId: id, type: FILE_TYPE.RESULT, url: saved.relativePath, filename: saved.originalName, mimeType: saved.mimeType, size: saved.size, uploadedBy: "ADMIN" },
     });
   } else {
-    publicUrl = resultLink as string;
+    resultRef = resultLink as string;
+  }
+  for (const p of previews) {
+    const saved = await saveUpload("preview", p);
+    await prisma.file.create({
+      data: { orderId: id, type: FILE_TYPE.PREVIEW, url: saved.relativePath, filename: saved.originalName, mimeType: saved.mimeType, size: saved.size, uploadedBy: "ADMIN" },
+    });
   }
 
   const cleanNote = note?.trim() || undefined;
@@ -234,21 +258,59 @@ export async function uploadOrderResult(c: AppContext) {
     await prisma.orderItem.create({ data: { orderId: id, label: "Catatan hasil", value: cleanNote } });
   }
 
-  const updated = await prisma.order.update({
-    where: { id },
-    data: { resultUrl: publicUrl, status: ORDER_STATUS.COMPLETED },
-  });
-
-  // Hasil + catatan admin dikirim ke customer, lalu minta review.
   const phone = order.user.phoneNumber;
-  await notifyCustomer(phone, messages.completed({ orderNumber: updated.orderNumber, resultUrl: publicUrl, note: cleanNote }));
-  await maybeSendSticker(phone, env.stickers.completed);
 
-  await setState(phone, CONVERSATION_STATE.REVIEW, {}, updated.id);
-  await notifyCustomer(phone, messages.askReview());
+  // ---- Order lama yang sudah lunas penuh: langsung selesai & terbuka ----
+  if (fullyPaid) {
+    const updated = await prisma.order.update({ where: { id }, data: { resultUrl: resultRef, status: ORDER_STATUS.COMPLETED } });
+    await purgeCustomerFiles(id);
+    await notifyCustomer(phone, messages.completed({ orderNumber: updated.orderNumber, resultUrl: buildUploadUrl(id), note: cleanNote }));
+    await maybeSendSticker(phone, env.stickers.completed);
+    await setState(phone, CONVERSATION_STATE.REVIEW, {}, updated.id);
+    await notifyCustomer(phone, messages.askReview());
+    logger.info("Order marked completed (already fully paid)", { orderNumber: updated.orderNumber });
+    return c.json(updated);
+  }
 
-  logger.info("Order marked completed", { orderNumber: updated.orderNumber });
+  // ---- Alur DP: pratinjau dulu, file asli terkunci sampai pelunasan ----
+  const updated = await prisma.order.update({ where: { id }, data: { resultUrl: resultRef, status: ORDER_STATUS.WAITING_FINAL_PAYMENT } });
+  const pending = await ensurePendingPayment(id);
+  const qris = await getActiveQris();
+  await setState(phone, CONVERSATION_STATE.WAITING_PAYMENT, {}, updated.id);
+  await notifyCustomer(
+    phone,
+    messages.resultPreview({
+      orderNumber: updated.orderNumber,
+      remaining: pending?.amount ?? order.price - paidTotal,
+      uploadUrl: buildUploadUrl(id),
+      qrisUrl: qris?.url,
+      dynamicQris: await hasDynamicQris(),
+      note: cleanNote,
+    })
+  );
+
+  logger.info("Result preview sent, waiting final payment", { orderNumber: updated.orderNumber });
   return c.json(updated);
+}
+
+/** GET /api/orders/:id/files/:fileId/download  (admin) - unduh file apa pun milik order, termasuk hasil terkunci. */
+export async function downloadOrderFile(c: AppContext) {
+  const orderId = Number(c.req.param("id"));
+  const fileId = Number(c.req.param("fileId"));
+  const file = await prisma.file.findFirst({ where: { id: fileId, orderId } });
+  if (!file) throw new HttpError(404, "File tidak ditemukan");
+
+  const stored = await prisma.upload.findUnique({ where: { key: file.url.replace(/^\/uploads\//, "") } });
+  if (!stored) throw new HttpError(404, "Isi file sudah tidak ada (mungkin sudah dihapus otomatis).");
+
+  const safeName = file.filename.replace(/[^\w.\- ]+/g, "_");
+  return new Response(stored.data as unknown as BodyInit, {
+    headers: {
+      "Content-Type": stored.mimeType || "application/octet-stream",
+      "Content-Disposition": `attachment; filename="${safeName}"`,
+      "Cache-Control": "no-store",
+    },
+  });
 }
 
 export async function listReviews(c: AppContext) {

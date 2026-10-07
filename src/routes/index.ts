@@ -11,12 +11,30 @@ import {
   updateOrderNote,
   sendCustomerMessage,
   uploadOrderResult,
+  downloadOrderFile,
   listReviews,
 } from "../controllers/order.controller";
 import { listPayments, verifyPaymentController, rejectPaymentController } from "../controllers/payment.controller";
 import { getStats, listCustomers } from "../controllers/dashboard.controller";
-import { getQris, uploadQrisController, setQrisLinkController, deleteQrisController } from "../controllers/settings.controller";
-import { getUploadInfo, uploadProofPublic, uploadReferencePublic } from "../controllers/public.controller";
+import {
+  getQris,
+  uploadQrisController,
+  setQrisLinkController,
+  deleteQrisController,
+  getDynamicQris,
+  setDynamicQris,
+  deleteDynamicQris,
+  previewDynamicQris,
+} from "../controllers/settings.controller";
+import {
+  getUploadInfo,
+  uploadProofPublic,
+  uploadReferencePublic,
+  getPreviewImage,
+  downloadResultPublic,
+  requestRevisionPublic,
+  getQrisSvg,
+} from "../controllers/public.controller";
 
 const api = new Hono<AppEnv>();
 
@@ -25,6 +43,10 @@ const pub = new Hono<AppEnv>();
 pub.get("/upload/:token", getUploadInfo);
 pub.post("/upload/:token/proof", uploadProofPublic);
 pub.post("/upload/:token/reference", uploadReferencePublic);
+pub.get("/upload/:token/preview/:fileId", getPreviewImage);
+pub.get("/upload/:token/download/:fileId", downloadResultPublic);
+pub.post("/upload/:token/revision", requestRevisionPublic);
+pub.get("/upload/:token/qris.svg", getQrisSvg);
 api.route("/public", pub);
 
 // --- Auth ---
@@ -44,6 +66,7 @@ orders.patch("/:id/status", changeOrderStatus);
 orders.patch("/:id/note", updateOrderNote);
 orders.post("/:id/message", sendCustomerMessage);
 orders.post("/:id/result", uploadOrderResult);
+orders.get("/:id/files/:fileId/download", downloadOrderFile);
 api.route("/orders", orders);
 
 const payments = new Hono<AppEnv>();
@@ -65,6 +88,10 @@ settings.get("/qris", getQris);
 settings.post("/qris", uploadQrisController);
 settings.post("/qris/link", setQrisLinkController);
 settings.delete("/qris", deleteQrisController);
+settings.get("/qris/dynamic", getDynamicQris);
+settings.get("/qris/preview.svg", previewDynamicQris);
+settings.post("/qris/payload", setDynamicQris);
+settings.delete("/qris/payload", deleteDynamicQris);
 api.route("/settings", settings);
 
 export default api;

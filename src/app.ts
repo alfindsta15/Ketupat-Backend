@@ -7,7 +7,7 @@ import apiRoutes from "./routes";
 import { receiveFonnteWebhook } from "./controllers/webhook.controller";
 import { apiRateLimiter, webhookRateLimiter } from "./middleware/rateLimit.middleware";
 import { errorHandler, notFoundHandler } from "./middleware/error.middleware";
-import { UPLOAD_DIRS } from "./lib/storage";
+import { PUBLIC_UPLOAD_DIRS } from "./lib/storage";
 import { prisma } from "./lib/prisma";
 
 /** Cocokkan origin dengan daftar FRONTEND_URL (mendukung wildcard, mis. https://*.vercel.app). */
@@ -41,7 +41,7 @@ export function createApp() {
   app.on(["GET", "HEAD"], "/uploads/*", async (c) => {
     const key = decodeURIComponent(new URL(c.req.url).pathname.replace(/^\/uploads\//, ""));
     const [dir, name, ...rest] = key.split("/");
-    if (rest.length || !name || !(UPLOAD_DIRS as readonly string[]).includes(dir) || !/^[A-Za-z0-9._-]+$/.test(name)) {
+    if (rest.length || !name || !PUBLIC_UPLOAD_DIRS.includes(dir) || !/^[A-Za-z0-9._-]+$/.test(name)) {
       return c.json({ message: "Not found" }, 404);
     }
     const file = await prisma.upload.findUnique({ where: { key } });

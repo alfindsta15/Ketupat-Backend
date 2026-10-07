@@ -5,7 +5,7 @@ import { ORDER_STATUS, PAYMENT_STATUS } from "../utils/constants";
 export async function getStats(c: AppContext) {
   const [totalOrders, pendingPayment, processing, completed, paidPayments, byService] = await Promise.all([
     prisma.order.count(),
-    prisma.order.count({ where: { status: { in: [ORDER_STATUS.WAITING_PAYMENT, ORDER_STATUS.PAYMENT_REVIEW] } } }),
+    prisma.order.count({ where: { status: { in: [ORDER_STATUS.WAITING_PAYMENT, ORDER_STATUS.PAYMENT_REVIEW, ORDER_STATUS.WAITING_FINAL_PAYMENT] } } }),
     prisma.order.count({ where: { status: ORDER_STATUS.PROCESSING } }),
     prisma.order.count({ where: { status: ORDER_STATUS.COMPLETED } }),
     prisma.payment.findMany({ where: { status: PAYMENT_STATUS.PAID }, select: { amount: true } }),

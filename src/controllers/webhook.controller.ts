@@ -7,6 +7,7 @@ import { cleanExtension, downloadToUploads } from "../utils/download";
 import { handleIncomingMessage, IncomingWhatsAppMessage } from "../bot/bot.engine";
 import { readAnyBody } from "../lib/http";
 import { runInBackground } from "../lib/context";
+import { deleteStoredFile } from "../lib/storage";
 
 const IMAGE_EXTENSIONS = ["jpg", "jpeg", "png", "webp", "gif", "heic", "heif"];
 
@@ -55,6 +56,14 @@ export async function receiveFonnteWebhook(c: AppContext) {
   }
 
   const data = parsed.data;
+
+  // Pesan dari GRUP WhatsApp (mis. grup admin tempat bot dimasukkan) tidak boleh dijawab bot sebagai customer.
+  if ((data.member ?? "").trim() || data.sender.includes("@g.us")) {
+    // `sender` pada pesan grup biasanya = ID grup (…@g.us). Dicatat agar admin bisa mengambil ID grup lewat `wrangler tail`.
+    logger.info("Group message ignored", { sender: data.sender, member: data.member ?? null });
+    return c.json({ received: true, ignored: "group-message" }, 200);
+  }
+
   const phoneNumber = normalizePhoneNumber(data.sender);
   if (!phoneNumber) {
     return c.json({ message: "Unable to normalize sender phone number" }, 400);
@@ -125,5 +134,8 @@ async function processIncoming(data: z.infer<typeof fonnteWebhookSchema>, phoneN
       error: err instanceof Error ? err.message : String(err),
       phoneNumber,
     });
+  } finally {
+    // Lampiran lewat chat tidak diproses (customer diarahkan ke link upload), jadi salinan sementara dihapus.
+    await deleteStoredFile(mediaLocalPath).catch(() => undefined);
   }
 }

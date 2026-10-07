@@ -9,8 +9,9 @@ import { resetState, setState } from "../bot/bot.state";
 import { HttpError } from "../middleware/error.middleware";
 import { notifyCustomer } from "./notification.service";
 import { buildUploadUrl } from "./upload-link.service";
-import { ensurePendingPayment, markActivePaymentPaid } from "./payment.service";
-import { getActiveQris } from "./settings.service";
+import { ensurePendingPayment, markActivePaymentPaid, nextPaymentSpec } from "./payment.service";
+import { purgeCustomerFiles } from "./cleanup.service";
+import { getActiveQris, hasDynamicQris } from "./settings.service";
 import { maybeSendSticker } from "../utils/sticker";
 
 export interface CreateOrderInput {
@@ -98,15 +99,17 @@ export async function setOrderPrice(orderId: number, price: number, note?: strin
 
     await tx.quotation.create({ data: { orderId, price, note, createdBy: adminId } });
 
-    const existingPayment = await tx.payment.findFirst({
-      where: { orderId, status: { in: ["PENDING", "REVIEW"] } },
-      orderBy: { createdAt: "desc" },
-    });
+    // Tagihan pertama = DP 50% (sisanya menjadi pelunasan setelah hasil siap).
+    const payments = await tx.payment.findMany({ where: { orderId }, orderBy: { createdAt: "desc" } });
+    const spec = nextPaymentSpec(price, payments);
+    const existingPayment = payments.find((p: { status: string }) => p.status === "PENDING" || p.status === "REVIEW");
 
-    if (!existingPayment) {
-      await tx.payment.create({ data: { orderId, amount: price, status: "PENDING" } });
-    } else {
-      await tx.payment.update({ where: { id: existingPayment.id }, data: { amount: price } });
+    if (spec) {
+      if (!existingPayment) {
+        await tx.payment.create({ data: { orderId, amount: spec.amount, kind: spec.kind, status: "PENDING" } });
+      } else if (existingPayment.status === "PENDING") {
+        await tx.payment.update({ where: { id: existingPayment.id }, data: { amount: spec.amount, kind: spec.kind } });
+      }
     }
 
     return order;
@@ -142,15 +145,18 @@ export async function changeOrderStatusWithNotify(orderId: number, status: strin
       break;
     }
 
-    case ORDER_STATUS.WAITING_PAYMENT: {
-      await ensurePendingPayment(order.id);
+    case ORDER_STATUS.WAITING_PAYMENT:
+    case ORDER_STATUS.WAITING_FINAL_PAYMENT: {
+      const pending = await ensurePendingPayment(order.id);
       await setState(phone, CONVERSATION_STATE.WAITING_PAYMENT, {}, order.id);
       const qris = await getActiveQris();
       await notifyCustomer(
         phone,
         messages.payment({
           orderNumber: order.orderNumber,
-          total: order.price ?? 0,
+          total: pending?.amount ?? order.price ?? 0,
+          kind: pending?.kind,
+          dynamicQris: await hasDynamicQris(),
           qrisUrl: qris?.url,
           uploadUrl: buildUploadUrl(order.id),
         })
@@ -170,12 +176,17 @@ export async function changeOrderStatusWithNotify(orderId: number, status: strin
 
     case ORDER_STATUS.PAID:
     case ORDER_STATUS.PROCESSING: {
-      const paid = await markActivePaymentPaid(order.id, adminId);
+      const paid = await markActivePaymentPaid(order.id, adminId, { skipFinal: true });
       await setState(phone, CONVERSATION_STATE.PROCESSING, {}, order.id);
       if (paid) {
         await notifyCustomer(
           phone,
-          messages.paymentVerified({ orderNumber: order.orderNumber, amount: paid.amount || order.price || 0 })
+          messages.paymentVerified({
+            orderNumber: order.orderNumber,
+            amount: paid.amount || order.price || 0,
+            kind: paid.kind,
+            remaining: order.price ? Math.max(0, order.price - paid.amount) : 0,
+          })
         );
         await maybeSendSticker(phone, env.stickers.paymentVerified);
       } else if (status === ORDER_STATUS.PAID) {
@@ -196,7 +207,13 @@ export async function changeOrderStatusWithNotify(orderId: number, status: strin
     }
 
     case ORDER_STATUS.COMPLETED: {
-      await notifyCustomer(phone, messages.completed({ orderNumber: order.orderNumber, resultUrl: order.resultUrl }));
+      // Selesai = lunas: tagihan aktif ditandai lunas (hasil terbuka) & file kiriman customer dihapus.
+      await markActivePaymentPaid(order.id, adminId);
+      await purgeCustomerFiles(order.id);
+      await notifyCustomer(
+        phone,
+        messages.completed({ orderNumber: order.orderNumber, resultUrl: order.resultUrl ? buildUploadUrl(order.id) : null })
+      );
       await maybeSendSticker(phone, env.stickers.completed);
       await setState(phone, CONVERSATION_STATE.REVIEW, {}, order.id);
       await notifyCustomer(phone, messages.askReview());

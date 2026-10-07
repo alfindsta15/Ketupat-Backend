@@ -1,6 +1,11 @@
 import { SERVICES, SERVICE_ORDER, ServiceCode } from "../utils/constants";
 import { getServiceProfile, ServiceTier } from "./bot.services";
 
+function clip(text: string, max: number): string {
+  const t = (text ?? "").trim();
+  return t.length > max ? t.slice(0, max - 1) + "…" : t;
+}
+
 function serviceMenuLines(): string {
   return SERVICE_ORDER.map(
     (code, i) => `${i + 1}️⃣ ${SERVICES[code].emoji} ${SERVICES[code].label}`
@@ -17,16 +22,16 @@ function callName(name?: string | null): string {
   return n ? `kak ${n}` : "kak";
 }
 
-export function paymentStatusLabel(status: string | null | undefined): string {
+export function paymentStatusLabel(status: string | null | undefined, kind?: string | null): string {
   switch (status) {
     case "PAID":
-      return "✅ Sudah dibayar (lunas)";
+      return kind === "DP" ? "✅ DP 50% sudah dibayar (pelunasan menyusul)" : "✅ Sudah dibayar (lunas)";
     case "REVIEW":
       return "🔎 Bukti diterima, menunggu validasi admin";
     case "REJECTED":
       return "❌ Bukti belum sesuai, mohon upload ulang";
     case "PENDING":
-      return "⏳ Belum dibayar";
+      return kind === "FINAL" ? "⏳ Menunggu pelunasan 50%" : kind === "DP" ? "⏳ Menunggu DP 50%" : "⏳ Belum dibayar";
     default:
       return "➖ Belum ada tagihan";
   }
@@ -42,7 +47,8 @@ export const messages = {
     `1️⃣ Pilih layanan\n` +
     `2️⃣ Ceritakan kebutuhanmu\n` +
     `3️⃣ Kami kirim penawaran harga\n` +
-    `4️⃣ Bayar via QRIS, lalu kami langsung kerjakan ✨\n\n` +
+    `4️⃣ Bayar *DP 50%* via QRIS, lalu kami langsung kerjakan ✨\n` +
+    `5️⃣ Cek pratinjau hasil, lalu lunasi sisanya untuk mengunduh file 🎁\n\n` +
     `Yuk, mau dibantu apa hari ini? Balas dengan *angka* atau nama layanannya ya 👇\n\n` +
     `${serviceMenuLines()}\n\n` +
     `💡 Ketik *STATUS* kapan saja untuk cek progres pesananmu.`,
@@ -64,7 +70,23 @@ export const messages = {
   askDetail: (opts: { index: number; total: number; prompt: string }) =>
     `*(${opts.index + 1}/${opts.total})* ${opts.prompt}`,
 
-  askDeadline: () => `⏰ Kapan deadline pengerjaannya? (contoh: 30 September 2026)`,
+  askDeadline: () => `⏰ Kapan deadline pengerjaannya? (contoh: 30 September 2026 atau "besok sore")`,
+
+  formNeedText: () =>
+    `Untuk form pesanan, kirim *teks* ya 🙏 (copy form tadi lalu isi). Foto/file referensi bisa diupload nanti lewat link khusus setelah order dibuat.`,
+
+  invalidDescription: () =>
+    `Hmm, ceritanya masih terlalu singkat nih 😅 Tulis agak lengkap ya (minimal 10 karakter): apa yang dibutuhkan dan hasil yang diharapkan 📝`,
+
+  invalidDetail: (prompt: string) =>
+    `Jawabannya belum cukup jelas 🙏 Mohon dijawab sedikit lebih lengkap ya.\n\n${prompt}`,
+
+  invalidDeadline: () =>
+    `Deadline-nya belum kebaca nih 😅 Tulis tanggalnya ya, contoh: *30 September 2026*, *besok sore*, atau *3 hari lagi*.`,
+
+  invalidName: () => `Nama yang kamu tulis belum sesuai 😅 Cukup tulis nama panggilan/nama lengkap saja ya (2-50 huruf).`,
+
+  invalidReference: () => `Referensi terlalu panjang 🙏 Cukup tulis link atau keterangan singkat (maks. 500 karakter), atau ketik *SKIP*.`,
 
   askReference: (tier: ServiceTier) =>
     tier === "HEAVY"
@@ -113,7 +135,9 @@ export const messages = {
     `💰 *QUOTATION KETUPAT*\n\n` +
     `Order: #${opts.orderNumber}\n` +
     `Layanan: ${opts.serviceLabel}\n` +
-    `Harga: ${formatRupiah(opts.price)}\n` +
+    `Total harga: ${formatRupiah(opts.price)}\n` +
+    `• DP 50% (bayar sekarang): ${formatRupiah(Math.round(opts.price / 2))}\n` +
+    `• Pelunasan 50% (setelah hasil siap): ${formatRupiah(opts.price - Math.round(opts.price / 2))}\n` +
     `Deadline: ${opts.deadline}\n` +
     (opts.note?.trim() ? `\n📝 *Catatan dari admin:*\n${opts.note.trim()}\n` : "") +
     `\nJika detail sudah sesuai, silakan lanjut ke pembayaran.\n\n` +
@@ -125,15 +149,18 @@ export const messages = {
     `💬 Sip, tulis aja pertanyaan/kendalanya. Admin KETUPAT bakal segera gas balas kok 🙌`,
 
   /** Info pembayaran + LINK UPLOAD bukti (bukan kirim foto di chat). */
-  payment: (opts: { orderNumber: string; total: number; qrisUrl?: string | null; uploadUrl: string }) =>
-    `💳 *PEMBAYARAN*\n\n` +
+  payment: (opts: { orderNumber: string; total: number; qrisUrl?: string | null; uploadUrl: string; kind?: string | null; dynamicQris?: boolean }) =>
+    `💳 *${opts.kind === "FINAL" ? "PELUNASAN 50%" : opts.kind === "DP" ? "PEMBAYARAN DP 50%" : "PEMBAYARAN"}*\n\n` +
     `Order: #${opts.orderNumber}\n` +
-    `Total: ${formatRupiah(opts.total)}\n\n` +
-    (opts.qrisUrl
-      ? `1️⃣ Buka & scan QRIS di link ini 👇\n🔗 ${opts.qrisUrl}\n\n`
-      : `1️⃣ Admin akan mengirim metode pembayaran ya.\n\n`) +
-    `2️⃣ Setelah bayar, *upload bukti pembayaran* lewat link khusus ini (bukan dikirim di chat) 👇\n🔗 ${opts.uploadUrl}\n\n` +
-    `⚠️ Pastikan nominalnya sesuai: ${formatRupiah(opts.total)}.`,
+    `${opts.kind === "FINAL" ? "Sisa tagihan" : opts.kind === "DP" ? "DP yang dibayar sekarang" : "Total"}: ${formatRupiah(opts.total)}\n\n` +
+    (opts.dynamicQris
+      ? `Buka link ini: di sana ada *QRIS dengan nominal otomatis* (tinggal scan, tidak perlu ketik jumlah) dan kolom *upload bukti bayar* 👇\n🔗 ${opts.uploadUrl}\n\n` +
+        `Setelah bayar, upload bukti di halaman yang sama (bukan dikirim di chat) 🙏`
+      : (opts.qrisUrl
+          ? `1️⃣ Buka & scan QRIS di link ini 👇\n🔗 ${opts.qrisUrl}\n\n`
+          : `1️⃣ Admin akan mengirim metode pembayaran ya.\n\n`) +
+        `2️⃣ Setelah bayar, *upload bukti pembayaran* lewat link khusus ini (bukan dikirim di chat) 👇\n🔗 ${opts.uploadUrl}\n\n` +
+        `⚠️ Pastikan nominalnya sesuai: ${formatRupiah(opts.total)}.`),
 
   paymentNoQris: () =>
     `⚠️ Waduh, link QRIS belum ke-setting nih. Admin bakal segera hubungi kamu buat atur metode bayar lain ya 🙏`,
@@ -156,10 +183,13 @@ export const messages = {
   referenceReceived: (opts: { orderNumber: string; fileCount: number }) =>
     `📎 *${opts.fileCount} file referensi* untuk order #${opts.orderNumber} sudah kami terima. Makasih ya! 🙌`,
 
-  paymentVerified: (opts: { orderNumber: string; amount: number; note?: string | null }) =>
-    `🎉 *PEMBAYARAN BERHASIL*\n\n` +
+  paymentVerified: (opts: { orderNumber: string; amount: number; note?: string | null; kind?: string | null; remaining?: number }) =>
+    `🎉 *${opts.kind === "DP" ? "DP BERHASIL DITERIMA" : "PEMBAYARAN BERHASIL"}*\n\n` +
     `Order: #${opts.orderNumber}\n\n` +
-    `Pembayaran sebesar ${formatRupiah(opts.amount)} telah dikonfirmasi.\n` +
+    `${opts.kind === "DP" ? "DP 50%" : "Pembayaran"} sebesar ${formatRupiah(opts.amount)} telah dikonfirmasi.\n` +
+    (opts.kind === "DP" && opts.remaining
+      ? `Sisa pelunasan ${formatRupiah(opts.remaining)} dibayar setelah hasil selesai. Kamu akan menerima *pratinjau hasil* dulu sebelum melunasi.\n`
+      : "") +
     (opts.note?.trim() ? `\n📝 *Catatan admin:*\n${opts.note.trim()}\n` : "") +
     `\nPesanan kamu sekarang masuk ke tahap pengerjaan.\n\n` +
     statusProgress("PROCESSING") +
@@ -186,6 +216,32 @@ export const messages = {
     `Pesanan kamu sedang kami kerjakan sekarang. Kami kabari lagi begitu selesai ya 🚀\n\n` +
     statusProgress("PROCESSING"),
 
+  statusWaitingFinalPayment: (orderNumber: string) =>
+    `🟣 *UPDATE ORDER*\n\nOrder: #${orderNumber}\n\n` +
+    `Hasil pesananmu sudah siap dilihat. Lunasi sisa pembayaran untuk membuka file hasilnya ya 🙌`,
+
+  /** Pratinjau hasil + tagihan pelunasan. File asli terkunci sampai lunas. */
+  resultPreview: (opts: {
+    orderNumber: string;
+    remaining: number;
+    uploadUrl: string;
+    qrisUrl?: string | null;
+    dynamicQris?: boolean;
+    note?: string | null;
+  }) =>
+    `🎁 *HASIL PESANAN SIAP DICEK*\n\n` +
+    `Order: #${opts.orderNumber}\n\n` +
+    `Pekerjaan sudah selesai! Lihat *pratinjau hasilnya* di link ini 👇\n🔗 ${opts.uploadUrl}\n\n` +
+    (opts.note?.trim() ? `📝 *Catatan dari admin:*\n${opts.note.trim()}\n\n` : "") +
+    `🔒 File asli *terkunci* dan otomatis terbuka setelah pelunasan.\n` +
+    `💳 Sisa pelunasan: *${formatRupiah(opts.remaining)}*\n` +
+    (opts.dynamicQris ? `QRIS nominal otomatis ada di halaman yang sama 👆\n` : opts.qrisUrl ? `QRIS: ${opts.qrisUrl}\n` : "") +
+    `\nAda bagian yang perlu diperbaiki? Sampaikan lewat tombol *Minta Revisi* di halaman yang sama sebelum membayar ya. Setelah bayar, upload bukti di halaman itu juga 🙏`,
+
+  revisionReceived: (orderNumber: string) =>
+    `✍️ *Permintaan revisi diterima*\n\nOrder: #${orderNumber}\n\n` +
+    `Catatan revisimu sudah masuk ke tim kami. Kami perbaiki dulu, lalu kirim pratinjau terbaru ya 🙌`,
+
   statusCancelled: (orderNumber: string) =>
     `❌ *ORDER DIBATALKAN*\n\nOrder: #${orderNumber}\n\n` +
     `Pesanan ini sudah dibatalkan. Kalau ini di luar dugaan atau kamu mau pesan lagi, ketik *MENU* ya 🙏`,
@@ -196,11 +252,12 @@ export const messages = {
     statusLabel: string;
     price?: number | null;
     paymentStatus?: string | null;
+    paymentKind?: string | null;
   }) =>
     `📦 *STATUS ORDER*\n\n` +
     `Order: #${opts.orderNumber}\n` +
     (opts.price ? `Harga: ${formatRupiah(opts.price)}\n` : "") +
-    `Pembayaran: ${paymentStatusLabel(opts.paymentStatus)}\n\n` +
+    `Pembayaran: ${paymentStatusLabel(opts.paymentStatus, opts.paymentKind)}\n\n` +
     statusProgress(opts.status) +
     `\n\nStatus saat ini:\n${opts.statusLabel}`,
 
@@ -216,7 +273,7 @@ export const messages = {
   completed: (opts: { orderNumber: string; resultUrl?: string | null; note?: string | null }) =>
     `🎉 *PESANAN SELESAI!*\n\n` +
     `Order #${opts.orderNumber} sudah selesai dikerjakan.\n\n` +
-    (opts.resultUrl ? `📥 File hasil:\n${opts.resultUrl}\n\n` : "") +
+    (opts.resultUrl ? `📥 Unduh hasilmu (sudah terbuka) di sini:\n${opts.resultUrl}\n\n` : "") +
     (opts.note?.trim() ? `📝 *Catatan dari admin:*\n${opts.note.trim()}\n\n` : "") +
     `Terima kasih sudah menggunakan KETUPAT ❤️\n\n` +
     `KERJAKAN TUGAS CEPAT & TEPAT.`,
@@ -231,6 +288,51 @@ export const messages = {
 
   reviewThanks: () =>
     `Terima kasih atas feedback-nya! 🙏 Sampai jumpa di order berikutnya, KETUPAT selalu siap bantu 🚀`,
+
+  /* ---------- Pesan untuk grup/nomor admin ---------- */
+
+  adminNewOrder: (opts: {
+    orderNumber: string;
+    serviceLabel: string;
+    customerName: string;
+    phoneNumber: string;
+    description: string;
+    deadline: string;
+    details: { label: string; value: string }[];
+    reference?: string;
+    adminUrl: string;
+  }) =>
+    `🔔 *ORDERAN BARU MASUK*\n\n` +
+    `#${opts.orderNumber} • ${opts.serviceLabel}\n` +
+    `Nama: ${opts.customerName}\n` +
+    `WhatsApp: ${opts.phoneNumber}\n` +
+    `Deadline: ${opts.deadline}\n\n` +
+    `📝 Deskripsi:\n${clip(opts.description, 600)}\n` +
+    (opts.details.length
+      ? `\n` + opts.details.map((d) => `• ${d.label}: ${clip(d.value, 200)}`).join("\n") + `\n`
+      : "") +
+    (opts.reference ? `\n🔗 Referensi: ${clip(opts.reference, 200)}\n` : "") +
+    `\n👉 Segera cek & kirim quotation di web admin:\n${opts.adminUrl}`,
+
+  adminConsultation: (opts: { customerName: string; phoneNumber: string; description: string; adminUrl: string }) =>
+    `💬 *KONSULTASI BARU (GRATIS)*\n\n` +
+    `Nama: ${opts.customerName}\n` +
+    `WhatsApp: ${opts.phoneNumber}\n\n` +
+    `Pertanyaan:\n${clip(opts.description, 600)}\n\n` +
+    `Segera chat customer ini & cek di web admin:\n${opts.adminUrl}`,
+
+  adminProofReceived: (opts: { orderNumber: string; customerName: string; kind: string; amount: number; adminUrl: string }) =>
+    `💳 *BUKTI PEMBAYARAN MASUK*\n\n` +
+    `#${opts.orderNumber} • ${opts.customerName}\n` +
+    `Jenis: ${opts.kind === "FINAL" ? "Pelunasan 50%" : opts.kind === "DP" ? "DP 50%" : "Pembayaran"}\n` +
+    `Nominal: ${formatRupiah(opts.amount)}\n\n` +
+    `👉 Segera validasi di web admin:\n${opts.adminUrl}`,
+
+  adminRevisionRequested: (opts: { orderNumber: string; customerName: string; note: string; adminUrl: string }) =>
+    `✍️ *PERMINTAAN REVISI*\n\n` +
+    `#${opts.orderNumber} • ${opts.customerName}\n\n` +
+    `Bagian yang perlu diperbaiki:\n${clip(opts.note, 600)}\n\n` +
+    `👉 Cek & kirim pratinjau terbaru di web admin:\n${opts.adminUrl}`,
 
   fallbackUnknown: () =>
     `Hmm, aku belum nangkep maksud kamu nih 😅\n\n` +
@@ -248,6 +350,7 @@ const PROGRESS_TABLE: Record<string, string[]> = {
   PAYMENT_REVIEW: ["✅", "🔵", "⏳", "⏳", "⏳"],
   PAID: ["✅", "✅", "🔵", "⏳", "⏳"],
   PROCESSING: ["✅", "✅", "🔵", "⏳", "⏳"],
+  WAITING_FINAL_PAYMENT: ["✅", "🔵", "✅", "⏳", "⏳"],
   REVIEW: ["✅", "✅", "✅", "🔵", "⏳"],
   COMPLETED: ["✅", "✅", "✅", "✅", "✅"],
   CANCELLED: ["❌", "❌", "❌", "❌", "❌"],
@@ -267,6 +370,7 @@ export function statusLabel(status: string): string {
     PAYMENT_REVIEW: "🔎 PEMBAYARAN SEDANG DIVALIDASI ADMIN",
     PAID: "✅ PEMBAYARAN TERKONFIRMASI",
     PROCESSING: "🔵 SEDANG DIKERJAKAN",
+    WAITING_FINAL_PAYMENT: "🟣 HASIL SIAP, MENUNGGU PELUNASAN",
     REVIEW: "🔍 TAHAP REVIEW",
     COMPLETED: "🎉 SELESAI",
     CANCELLED: "❌ DIBATALKAN",

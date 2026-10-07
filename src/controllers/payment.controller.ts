@@ -4,7 +4,7 @@ import { prisma } from "../lib/prisma";
 import { HttpError, readJson } from "../lib/http";
 import { backfillPayments, rejectPaymentAndNotify, verifyPaymentAndNotify } from "../services/payment.service";
 
-const noteSchema = z.object({ note: z.string().trim().max(2000).optional() });
+const noteSchema = z.object({ note: z.string().trim().max(2000).optional(), force: z.boolean().optional() });
 
 /**
  * GET /api/payments?status=REVIEW
@@ -23,12 +23,12 @@ export async function listPayments(c: AppContext) {
   return c.json(payments);
 }
 
-/** POST /api/payments/:id/verify  body: { note? } */
+/** POST /api/payments/:id/verify  body: { note?, force? }  (force = tandai lunas manual tanpa bukti) */
 export async function verifyPaymentController(c: AppContext) {
   const id = Number(c.req.param("id"));
-  const { note } = noteSchema.parse(await readJson(c));
+  const { note, force } = noteSchema.parse(await readJson(c));
 
-  const result = await verifyPaymentAndNotify(id, c.get("admin").id, note || undefined);
+  const result = await verifyPaymentAndNotify(id, c.get("admin").id, note || undefined, { force });
   if (!result) throw new HttpError(404, "Pembayaran tidak ditemukan");
 
   return c.json({ payment: result.payment, order: result.order, alreadyPaid: result.alreadyPaid });

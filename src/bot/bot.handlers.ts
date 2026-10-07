@@ -104,3 +104,41 @@ export function parseRating(rawText: string): { rating: number; feedback?: strin
 export function isSkip(rawText: string): boolean {
   return ["skip", "tidak ada", "tidak", "-", "gak ada", "ga ada"].includes(rawText.trim().toLowerCase());
 }
+
+// ---------------------------------------------------------------------------
+// Validasi inputan customer (dipakai bot sebelum data disimpan ke order)
+// ---------------------------------------------------------------------------
+
+/** Deskripsi kebutuhan: 10-2000 karakter. */
+export function isValidDescription(rawText: string): boolean {
+  const t = rawText.trim();
+  return t.length >= 10 && t.length <= 2000;
+}
+
+/** Jawaban detail per layanan: 2-500 karakter (yang opsional boleh SKIP, dicek terpisah). */
+export function isValidDetail(rawText: string): boolean {
+  const t = rawText.trim();
+  return t.length >= 2 && t.length <= 500;
+}
+
+const DEADLINE_WORDS =
+  /(hari ini|besok|lusa|minggu|pekan|bulan|tahun|jam|pagi|siang|sore|malam|senin|selasa|rabu|kamis|jumat|jum'at|sabtu|segera|secepatnya|asap|januari|februari|maret|april|mei|juni|juli|agustus|agu|september|sep|oktober|okt|november|nov|desember|des|jan|feb|mar|apr|jun|jul)/i;
+
+/** Deadline: 3-60 karakter dan mengandung angka (tanggal/durasi) atau kata waktu yang dikenal. */
+export function isValidDeadline(rawText: string): boolean {
+  const t = rawText.trim();
+  if (t.length < 3 || t.length > 60) return false;
+  return /\d/.test(t) || DEADLINE_WORDS.test(t);
+}
+
+/** Nama: 2-50 karakter, huruf/spasi/titik/apostrof/strip saja (tanpa link atau angka). */
+export function isValidName(rawText: string): boolean {
+  const t = rawText.trim();
+  if (t.length < 2 || t.length > 50) return false;
+  return /^[\p{L}\p{M}][\p{L}\p{M}\s.'\-]*$/u.test(t);
+}
+
+/** Referensi teks (link/keterangan): maksimal 500 karakter. */
+export function isValidReference(rawText: string): boolean {
+  return rawText.trim().length <= 500;
+}

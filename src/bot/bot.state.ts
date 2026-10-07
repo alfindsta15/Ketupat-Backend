@@ -10,6 +10,8 @@ export interface DraftOrderContext {
   deadline?: string;
   reference?: string;
   customerName?: string;
+  /** Jawaban form satu-pesan yang sudah diterima (key field -> jawaban; "" = sengaja dilewati). */
+  formAnswers?: Record<string, string>;
   pendingRating?: number;
   pendingStatusLookup?: boolean;
 }

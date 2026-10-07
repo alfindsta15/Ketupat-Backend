@@ -3,6 +3,8 @@ import { prisma } from "../lib/prisma";
 export const SETTING_KEYS = {
   ACTIVE_QRIS_URL: "ACTIVE_QRIS_URL",
   ACTIVE_QRIS_FILENAME: "ACTIVE_QRIS_FILENAME",
+  /** Teks kode QRIS statis (hasil scan) untuk membuat QRIS dinamis dengan nominal otomatis. */
+  QRIS_PAYLOAD: "QRIS_PAYLOAD",
 } as const;
 
 export async function getSetting(key: string): Promise<string | null> {
@@ -56,4 +58,21 @@ export async function clearActiveQris() {
       },
     },
   });
+}
+
+export async function getQrisPayload(): Promise<string | null> {
+  return getSetting(SETTING_KEYS.QRIS_PAYLOAD);
+}
+
+export async function setQrisPayload(payload: string) {
+  await setSetting(SETTING_KEYS.QRIS_PAYLOAD, payload);
+}
+
+export async function clearQrisPayload() {
+  await prisma.setting.deleteMany({ where: { key: SETTING_KEYS.QRIS_PAYLOAD } });
+}
+
+/** true bila QRIS dinamis (nominal otomatis) sudah diatur. */
+export async function hasDynamicQris(): Promise<boolean> {
+  return Boolean(await getQrisPayload());
 }

@@ -78,7 +78,7 @@ model Order {
   referenceNote String?
   status      String    @default("WAITING_BRIEF")
   // WAITING_BRIEF | WAITING_QUOTATION | WAITING_PAYMENT | PAYMENT_REVIEW |
-  // PAID | PROCESSING | REVIEW | COMPLETED | CANCELLED
+  // PAID | PROCESSING | WAITING_FINAL_PAYMENT | REVIEW | COMPLETED | CANCELLED
   price       Float?
   adminNote   String?
   resultUrl   String?
@@ -115,7 +115,7 @@ model OrderItem {
 model File {
   id         Int      @id @default(autoincrement())
   orderId    Int?
-  type       String // BRIEF | REFERENCE | PROOF | RESULT | QRIS
+  type       String // BRIEF | REFERENCE | PROOF | RESULT | PREVIEW | QRIS
   url        String
   filename   String
   mimeType   String?
@@ -153,6 +153,7 @@ model Payment {
   orderId    Int
   amount     Float
   status     String    @default("PENDING") // PENDING | REVIEW | PAID | REJECTED
+  kind       String    @default("FULL") // FULL (lama, 1x bayar) | DP (uang muka 50%) | FINAL (pelunasan)
   proofFile  String?
   verifiedAt DateTime?
   verifiedBy Int?

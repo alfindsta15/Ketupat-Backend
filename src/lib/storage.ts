@@ -3,8 +3,15 @@ import { prisma } from "./prisma";
 import { HttpError } from "./http";
 
 /** Folder logis (bagian awal `key`). Sama dengan struktur folder `uploads/` versi lama. */
-export const UPLOAD_DIRS = ["qris", "results", "incoming", "proof", "reference"] as const;
+export const UPLOAD_DIRS = ["qris", "results", "incoming", "proof", "reference", "final", "preview"] as const;
 export type UploadDir = (typeof UPLOAD_DIRS)[number];
+
+/**
+ * Folder yang boleh dibuka lewat URL publik /uploads/<folder>/<nama>.
+ * "final" (file hasil akhir) dan "preview" (pratinjau) TIDAK publik: hanya bisa diakses lewat
+ * endpoint berpaksa token (hasil terkunci sampai lunas).
+ */
+export const PUBLIC_UPLOAD_DIRS: readonly string[] = ["qris", "results", "incoming", "proof", "reference"];
 
 export const IMAGE_TYPES = ["image/png", "image/jpeg", "image/jpg", "image/webp"];
 export const CUSTOMER_IMAGE_TYPES = [...IMAGE_TYPES, "image/heic", "image/heif"];
@@ -115,4 +122,54 @@ export async function parseMultipart(
     if (f.size > opts.maxFileBytes) throw new HttpError(413, "Ukuran file terlalu besar. Perkecil file lalu coba lagi.");
   }
   return { fields, files };
+}
+
+export interface FieldSpec {
+  allowed: string[];
+  /** true = terima tipe file apa pun (khusus unggahan admin; file hanya bisa diunduh sebagai lampiran). */
+  anyType?: boolean;
+  maxFileBytes: number;
+  maxFiles: number;
+}
+
+/** Seperti parseMultipart, tetapi untuk beberapa kolom file sekaligus (mis. `file` + `previews`). */
+export async function parseMultipartFields(
+  req: Request,
+  specs: Record<string, FieldSpec>
+): Promise<{ fields: Record<string, string>; files: Record<string, File[]> }> {
+  const files: Record<string, File[]> = Object.fromEntries(Object.keys(specs).map((k) => [k, []]));
+  const type = (req.headers.get("content-type") ?? "").toLowerCase();
+  if (!type.includes("multipart/form-data")) return { fields: {}, files };
+
+  const budget = Object.values(specs).reduce((sum, s) => sum + s.maxFileBytes * s.maxFiles, 0) + 512 * 1024;
+  const length = Number(req.headers.get("content-length") ?? 0);
+  if (length && length > budget) throw new HttpError(413, "Ukuran file terlalu besar. Perkecil file lalu coba lagi.");
+
+  let form: FormData;
+  try {
+    form = await req.formData();
+  } catch {
+    throw new HttpError(400, "Upload gagal dibaca. Coba lagi.");
+  }
+
+  const fields: Record<string, string> = {};
+  form.forEach((value, key) => {
+    if (typeof value === "string") fields[key] = value;
+    else if (specs[key]) files[key].push(value as File);
+  });
+
+  for (const [key, spec] of Object.entries(specs)) {
+    if (files[key].length > spec.maxFiles) throw new HttpError(400, "Jumlah file melebihi batas.");
+    for (const f of files[key]) {
+      if (!spec.anyType && !spec.allowed.includes(f.type)) throw new HttpError(400, `Tipe file tidak didukung: ${f.type || "tidak diketahui"}`);
+      if (f.size > spec.maxFileBytes) throw new HttpError(413, "Ukuran file terlalu besar. Perkecil file lalu coba lagi.");
+    }
+  }
+  return { fields, files };
+}
+
+/** Hapus isi file dari database berdasarkan path publik (/uploads/<folder>/<nama>). */
+export async function deleteStoredFile(relativePath: string | null | undefined) {
+  if (!relativePath || !relativePath.startsWith("/uploads/")) return;
+  await prisma.upload.deleteMany({ where: { key: relativePath.replace(/^\/uploads\//, "") } });
 }

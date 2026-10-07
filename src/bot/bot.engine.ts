@@ -16,11 +16,18 @@ import {
   parseRating,
   isSkip,
   serviceLabel,
+  isValidDescription,
+  isValidDetail,
+  isValidDeadline,
+  isValidName,
+  isValidReference,
 } from "./bot.handlers";
 import { createOrder } from "../services/order.service";
 import { ensurePendingPayment } from "../services/payment.service";
-import { getActiveQris } from "../services/settings.service";
+import { getActiveQris, hasDynamicQris } from "../services/settings.service";
 import { fonnteService } from "../services/fonnte.service";
+import { adminOrderUrl, notifyAdmins } from "../services/admin-notify.service";
+import { buildFormFields, checkField, formProblemsText, formText, parseFormReply } from "./bot.form";
 import { buildUploadUrl } from "../services/upload-link.service";
 import { CONVERSATION_STATE, ORDER_STATUS } from "../utils/constants";
 import { parseOrderNumber } from "../utils/orderNumber";
@@ -75,30 +82,39 @@ function isMedia(input: IncomingWhatsAppMessage): boolean {
   return Boolean(input.hasAttachment) || ["image", "document", "other"].includes(input.messageType);
 }
 
-/** Ping admin untuk konsultasi gratis. */
-async function notifyAdminOfConsultation(customerName: string, phoneNumber: string, description: string) {
-  if (!env.adminWhatsappNumber) {
-    logger.warn("ADMIN_WHATSAPP_NUMBER belum diisi - notifikasi konsultasi tidak terkirim");
-    return;
-  }
+/** Kabari para admin (grup WhatsApp) bahwa ada orderan baru. */
+async function notifyAdminsOfNewOrder(opts: {
+  orderId: number;
+  orderNumber: string;
+  service: string;
+  customerName: string;
+  phoneNumber: string;
+  description: string;
+  deadline: string;
+  details: { label: string; value: string }[];
+  reference?: string;
+}) {
+  const adminUrl = adminOrderUrl(opts.orderId);
   const text =
-    `🔔 *KONSULTASI BARU*\n\n` +
-    `Nama: ${customerName}\n` +
-    `WhatsApp: ${phoneNumber}\n\n` +
-    `Pertanyaan:\n${description}\n\n` +
-    `Gas langsung chat customer ini di WhatsApp ya, Min! 🙌`;
-  await fonnteService.sendText(env.adminWhatsappNumber, text);
-}
-
-/** Ping admin untuk order berat (coding/website/mobile app) yang perlu direview. */
-async function notifyAdminOfHeavyOrder(orderNumber: string, service: string, customerName: string, phoneNumber: string) {
-  if (!env.adminWhatsappNumber) return;
-  const text =
-    `🧩 *ORDER PERLU REVIEW*\n\n` +
-    `#${orderNumber} • ${serviceLabel(service)}\n` +
-    `Nama: ${customerName}\nWhatsApp: ${phoneNumber}\n\n` +
-    `Buka dashboard admin → Orders untuk cek brief teknis & kirim quotation.`;
-  await fonnteService.sendText(env.adminWhatsappNumber, text);
+    opts.service === "KONSULTASI"
+      ? messages.adminConsultation({
+          customerName: opts.customerName,
+          phoneNumber: opts.phoneNumber,
+          description: opts.description,
+          adminUrl,
+        })
+      : messages.adminNewOrder({
+          orderNumber: opts.orderNumber,
+          serviceLabel: serviceLabel(opts.service),
+          customerName: opts.customerName,
+          phoneNumber: opts.phoneNumber,
+          description: opts.description,
+          deadline: opts.deadline,
+          details: opts.details,
+          reference: opts.reference,
+          adminUrl,
+        });
+  await notifyAdmins(text);
 }
 
 async function sendStatusForOrder(phoneNumber: string, orderId: number) {
@@ -118,6 +134,7 @@ async function sendStatusForOrder(phoneNumber: string, orderId: number) {
       statusLabel: statusLabel(order.status),
       price: order.price,
       paymentStatus: order.payments[0]?.status ?? null,
+      paymentKind: order.payments[0]?.kind ?? null,
     })
   );
 }
@@ -130,6 +147,7 @@ async function sendStatusForOrder(phoneNumber: string, orderId: number) {
 const EXPECTED_STATES: Record<string, string[]> = {
   WAITING_QUOTATION: [S.WAITING_ADMIN_QUOTE],
   WAITING_PAYMENT: [S.QUOTATION_SENT, S.WAITING_PAYMENT],
+  WAITING_FINAL_PAYMENT: [S.WAITING_PAYMENT],
   PAYMENT_REVIEW: [S.PAYMENT_REVIEW],
   PAID: [S.PROCESSING],
   PROCESSING: [S.PROCESSING],
@@ -170,18 +188,80 @@ async function sendPaymentInstructions(phoneNumber: string, orderId: number) {
     await reply(phoneNumber, messages.noActiveOrder());
     return;
   }
-  await ensurePendingPayment(order.id);
+  const payment = await ensurePendingPayment(order.id);
   const qris = await getActiveQris();
+  const dynamicQris = await hasDynamicQris();
   await reply(
     phoneNumber,
     messages.payment({
       orderNumber: order.orderNumber,
-      total: order.price ?? 0,
+      total: payment?.amount ?? order.price ?? 0,
+      kind: payment?.kind,
+      dynamicQris,
       qrisUrl: qris?.url,
       uploadUrl: buildUploadUrl(order.id),
     })
   );
-  if (!qris) await reply(phoneNumber, messages.paymentNoQris());
+  if (!qris && !dynamicQris) await reply(phoneNumber, messages.paymentNoQris());
+}
+
+/** Buat order dari jawaban yang sudah lengkap, balas customer, dan kabari admin (dipakai form satu pesan & alur lama). */
+async function finalizeOrder(
+  phoneNumber: string,
+  data: {
+    service: string;
+    description: string;
+    deadline: string;
+    reference?: string;
+    details?: { label: string; value: string }[];
+    customerName: string;
+  }
+) {
+  const profile = getServiceProfile(data.service);
+  const order = await createOrder({
+    phoneNumber,
+    customerName: data.customerName,
+    service: data.service,
+    description: data.description,
+    deadline: data.deadline,
+    reference: data.reference,
+    details: data.details,
+  });
+
+  if (profile.tier === "FREE") {
+    await setState(phoneNumber, S.PROCESSING, {}, order.id);
+    await reply(phoneNumber, messages.konsultasiCreated(order.orderNumber));
+    await maybeSendSticker(phoneNumber, env.stickers.orderCreated);
+    await notifyAdminsOfNewOrder({
+      orderId: order.id,
+      orderNumber: order.orderNumber,
+      service: order.service,
+      customerName: data.customerName,
+      phoneNumber,
+      description: data.description,
+      deadline: "-",
+      details: [],
+    });
+    return;
+  }
+
+  await setState(phoneNumber, S.WAITING_ADMIN_QUOTE, {}, order.id);
+  await reply(
+    phoneNumber,
+    messages.orderCreated({ orderNumber: order.orderNumber, tier: profile.tier, uploadUrl: buildUploadUrl(order.id) })
+  );
+  await maybeSendSticker(phoneNumber, env.stickers.orderCreated);
+  await notifyAdminsOfNewOrder({
+    orderId: order.id,
+    orderNumber: order.orderNumber,
+    service: order.service,
+    customerName: data.customerName,
+    phoneNumber,
+    description: data.description,
+    deadline: data.deadline,
+    details: data.details ?? [],
+    reference: data.reference,
+  });
 }
 
 /**
@@ -289,8 +369,10 @@ export async function handleIncomingMessage(input: IncomingWhatsAppMessage): Pro
         await reply(phoneNumber, messages.invalidServiceChoice());
         return;
       }
-      await setState(phoneNumber, S.COLLECT_DESCRIPTION, {
+      // Form satu pesan: semua pertanyaan dikirim sekaligus, customer menjawab dalam 1 pesan.
+      await setState(phoneNumber, S.COLLECT_FORM, {
         service,
+        formAnswers: {},
         description: undefined,
         details: [],
         detailIndex: 0,
@@ -298,13 +380,17 @@ export async function handleIncomingMessage(input: IncomingWhatsAppMessage): Pro
         reference: undefined,
         customerName: undefined,
       });
-      await reply(phoneNumber, messages.askDescription(service));
+      await reply(phoneNumber, formText(service));
       return;
     }
 
     case S.COLLECT_DESCRIPTION: {
       if (!text) {
         await reply(phoneNumber, messages.askDescription((ctx.service as any) ?? "TUGAS"));
+        return;
+      }
+      if (!isValidDescription(text)) {
+        await reply(phoneNumber, messages.invalidDescription());
         return;
       }
       const profile = getServiceProfile(ctx.service ?? "TUGAS");
@@ -346,8 +432,14 @@ export async function handleIncomingMessage(input: IncomingWhatsAppMessage): Pro
         return;
       }
 
+      const skipped = Boolean(question.optional) && isSkip(text);
+      if (!skipped && !isValidDetail(text)) {
+        await reply(phoneNumber, messages.invalidDetail(question.prompt));
+        return;
+      }
+
       const details = [...(ctx.details ?? [])];
-      if (!(question.optional && isSkip(text))) {
+      if (!skipped) {
         details.push({ label: question.label, value: text });
       }
 
@@ -375,6 +467,10 @@ export async function handleIncomingMessage(input: IncomingWhatsAppMessage): Pro
         await reply(phoneNumber, messages.askDeadline());
         return;
       }
+      if (!isValidDeadline(text)) {
+        await reply(phoneNumber, messages.invalidDeadline());
+        return;
+      }
       const profile = getServiceProfile(ctx.service ?? "TUGAS");
       await setState(phoneNumber, S.COLLECT_REFERENCE, { deadline: text });
       await reply(phoneNumber, messages.askReference(profile.tier));
@@ -388,9 +484,63 @@ export async function handleIncomingMessage(input: IncomingWhatsAppMessage): Pro
         await reply(phoneNumber, messages.referenceFileViaChatNote());
         return;
       }
+      if (!isSkip(text) && !isValidReference(text)) {
+        await reply(phoneNumber, messages.invalidReference());
+        return;
+      }
       const reference = isSkip(text) ? undefined : text || undefined;
       await setState(phoneNumber, S.COLLECT_NAME, { reference });
       await reply(phoneNumber, messages.askName());
+      return;
+    }
+
+    case S.COLLECT_FORM: {
+      const service = ctx.service ?? "TUGAS";
+      if (!text) {
+        await reply(phoneNumber, media ? messages.formNeedText() : formText(service));
+        return;
+      }
+      const fields = buildFormFields(service);
+      const answers: Record<string, string> = { ...(ctx.formAnswers ?? {}) };
+      const pending = fields.map((_, i) => i).filter((i) => answers[fields[i].key] === undefined);
+      const parsed = parseFormReply(text, fields, pending);
+
+      const invalid = new Map<number, string>();
+      for (const [idx, raw] of parsed) {
+        const check = checkField(fields[idx], raw);
+        if (check.status === "ok") answers[fields[idx].key] = raw.trim();
+        else if (check.status === "skip") answers[fields[idx].key] = "";
+        else invalid.set(idx, check.reason);
+      }
+
+      const problems: { index: number; reason: string }[] = [];
+      fields.forEach((f, i) => {
+        if (invalid.has(i)) problems.push({ index: i, reason: invalid.get(i)! });
+        else if (!f.optional && answers[f.key] === undefined) problems.push({ index: i, reason: "belum diisi" });
+      });
+
+      if (problems.length > 0) {
+        await setState(phoneNumber, S.COLLECT_FORM, { formAnswers: answers });
+        // Tidak ada satu pun jawaban yang terbaca: kirim ulang form (bukan daftar kekurangan).
+        if (parsed.size === 0 && Object.keys(answers).length === 0) {
+          await reply(phoneNumber, formText(service));
+        } else {
+          await reply(phoneNumber, formProblemsText(fields, problems));
+        }
+        return;
+      }
+
+      const details = fields
+        .filter((f) => f.kind === "detail" && answers[f.key])
+        .map((f) => ({ label: f.label, value: answers[f.key] }));
+      await finalizeOrder(phoneNumber, {
+        service,
+        description: answers.description,
+        deadline: answers.deadline || "-",
+        reference: answers.reference || undefined,
+        details,
+        customerName: answers.name,
+      });
       return;
     }
 
@@ -400,35 +550,18 @@ export async function handleIncomingMessage(input: IncomingWhatsAppMessage): Pro
         return;
       }
 
-      const customerName = text;
-      const profile = getServiceProfile(ctx.service ?? "TUGAS");
-      const order = await createOrder({
-        phoneNumber,
-        customerName,
+      if (!isValidName(text)) {
+        await reply(phoneNumber, messages.invalidName());
+        return;
+      }
+      await finalizeOrder(phoneNumber, {
         service: ctx.service ?? "TUGAS",
         description: ctx.description ?? "-",
         deadline: ctx.deadline ?? "-",
         reference: ctx.reference,
         details: ctx.details,
+        customerName: text.trim(),
       });
-
-      if (profile.tier === "FREE") {
-        await setState(phoneNumber, S.PROCESSING, {}, order.id);
-        await reply(phoneNumber, messages.konsultasiCreated(order.orderNumber));
-        await maybeSendSticker(phoneNumber, env.stickers.orderCreated);
-        await notifyAdminOfConsultation(customerName, phoneNumber, ctx.description ?? "-");
-        return;
-      }
-
-      await setState(phoneNumber, S.WAITING_ADMIN_QUOTE, {}, order.id);
-      await reply(
-        phoneNumber,
-        messages.orderCreated({ orderNumber: order.orderNumber, tier: profile.tier, uploadUrl: buildUploadUrl(order.id) })
-      );
-      await maybeSendSticker(phoneNumber, env.stickers.orderCreated);
-      if (profile.tier === "HEAVY") {
-        await notifyAdminOfHeavyOrder(order.orderNumber, order.service, customerName, phoneNumber);
-      }
       return;
     }
 

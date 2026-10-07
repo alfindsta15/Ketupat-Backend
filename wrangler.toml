@@ -32,6 +32,8 @@ JWT_EXPIRES_IN = "30d"
 FONNTE_BASE_URL = "https://api.fonnte.com"
 # Nomor WhatsApp admin untuk notifikasi Konsultasi / order berat (format 628xxxxxxxxxx). Boleh kosong.
 ADMIN_WHATSAPP_NUMBER = "62881025054257"
+# ID grup WhatsApp para admin (format 120363xxxxxxxxxx@g.us). Kosong = notifikasi dikirim ke nomor di atas.
+ADMIN_WHATSAPP_GROUP_ID = "120363399202364217@g.us"
 MAX_UPLOAD_SIZE_MB = "5"
 RATE_LIMIT_WINDOW_MS = "60000"
 RATE_LIMIT_MAX = "120"

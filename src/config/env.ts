@@ -25,6 +25,7 @@ export interface Bindings {
   JWT_EXPIRES_IN?: string;
   FONNTE_BASE_URL?: string;
   ADMIN_WHATSAPP_NUMBER?: string;
+  ADMIN_WHATSAPP_GROUP_ID?: string;
   STICKER_ORDER_CREATED_URL?: string;
   STICKER_PAYMENT_VERIFIED_URL?: string;
   STICKER_COMPLETED_URL?: string;
@@ -55,6 +56,8 @@ export const env = {
   },
 
   adminWhatsappNumber: "",
+  /** ID grup WhatsApp admin (mis. 120363xxxxxxxxxx@g.us). Bila diisi, notifikasi order dikirim ke grup. */
+  adminWhatsappGroupId: "",
 
   stickers: {
     orderCreated: "",
@@ -86,6 +89,7 @@ export function initEnv(b: Partial<Bindings>, requestUrl?: string) {
   env.fonnte.webhookSecret = b.FONNTE_WEBHOOK_SECRET ?? "";
 
   env.adminWhatsappNumber = b.ADMIN_WHATSAPP_NUMBER ?? "";
+  env.adminWhatsappGroupId = (b.ADMIN_WHATSAPP_GROUP_ID ?? "").trim();
 
   env.stickers.orderCreated = b.STICKER_ORDER_CREATED_URL ?? "";
   env.stickers.paymentVerified = b.STICKER_PAYMENT_VERIFIED_URL ?? "";

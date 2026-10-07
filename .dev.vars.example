@@ -18,3 +18,7 @@ NODE_ENV="development"
 SEED_ADMIN_NAME="Admin KETUPAT"
 SEED_ADMIN_EMAIL="admin@ketupat.id"
 SEED_ADMIN_PASSWORD="ganti-password-ini"
+
+# Opsional lokal: ID grup WhatsApp admin (120363xxxxxxxxxx@g.us) / nomor admin
+ADMIN_WHATSAPP_GROUP_ID=""
+ADMIN_WHATSAPP_NUMBER=""
